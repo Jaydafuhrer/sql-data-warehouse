@@ -1,0 +1,107 @@
+-- =====================================================
+-- 7. LOAD CRM DATA
+-- =====================================================
+
+LOAD DATA LOCAL INFILE
+'/Users/owner/Desktop/sql-data-warehouse-project/datasets/source_crm/cust_info.csv'
+INTO TABLE real_crm_cust_info
+FIELDS TERMINATED BY ','
+OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(
+    cst_id,
+    cst_key,
+    cst_first_name,
+    cst_last_name,
+    cst_marital_status,
+    cst_gender,
+    cst_create_date
+);
+
+LOAD DATA LOCAL INFILE
+'/Users/owner/Desktop/sql-data-warehouse-project/datasets/source_crm/prd_info.csv'
+INTO TABLE real_crm_prd_info
+FIELDS TERMINATED BY ','
+OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(
+    prd_id,
+    prd_key,
+    prd_name,
+    prd_cost,
+    prd_line,
+    prd_start_date,
+    prd_end_date
+);
+
+LOAD DATA LOCAL INFILE
+'/Users/owner/Desktop/sql-data-warehouse-project/datasets/source_crm/sales_details.csv'
+INTO TABLE real_crm_sale_details
+FIELDS TERMINATED BY ','
+OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(
+    sls_order_num,
+    sls_prod_key,
+    sls_cust_id,
+    sls_order_date,
+    sls_ship_date,
+    sls_due_date,
+    sls_sales,
+    sls_quantity,
+    sls_price
+);
+
+
+-- =====================================================
+-- 8. LOAD ERP DATA
+-- =====================================================
+
+LOAD DATA LOCAL INFILE
+'/Users/owner/Desktop/sql-data-warehouse-project/datasets/source_erp/CUST_AZ12.csv'
+INTO TABLE real_erp_cust_az12
+FIELDS TERMINATED BY ','
+OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(
+    CID,
+    birth_date,
+    gender
+);
+
+LOAD DATA LOCAL INFILE
+'/Users/owner/Desktop/sql-data-warehouse-project/datasets/source_erp/LOC_A101.csv'
+INTO TABLE real_erp_loc_a101
+FIELDS TERMINATED BY ','
+OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(
+    CID,
+    country
+);
+
+
+LOAD DATA LOCAL INFILE
+'/Users/owner/Desktop/sql-data-warehouse-project/datasets/source_erp/PX_CAT_G1V2.csv'
+INTO TABLE real_erp_px_cat_g1v2
+FIELDS TERMINATED BY ','
+OPTIONALLY ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(
+    ID,
+    category,
+    sub_category,
+    maintenance
+);
+
+SELECT *
+FROM real_data_warehouse_bronze.real_crm_cust_info;
+;
+
+
