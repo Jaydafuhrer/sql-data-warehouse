@@ -1,0 +1,118 @@
+-- ============================================================
+-- GOLD LAYER
+-- Creates customer and product dimensions and a sales fact view
+-- from the cleaned silver-layer tables.
+-- ============================================================
+
+-- Select the silver database and inspect the available source tables.
+USE real_data_warehouse_silver;
+
+SELECT* FROM real_silver_crm_cust_info;
+SELECT*FROM real_silver_crm_prd_info;
+SELECT* FROM real_silver_crm_sale_details;
+SELECT* FROM real_silver_erp_cust_az12;
+SELECT* FROM real_silver_erp_loc_a101;
+SELECT* FROM real_silver_erp_px_cat_g1v2;
+
+-- Create the database that will contain the gold-layer views.
+CREATE DATABASE real_data_warehouse_gold;
+
+
+-- ============================================================
+-- CUSTOMER DIMENSION
+-- Combines CRM customer data with ERP demographics and location.
+-- ============================================================
+
+CREATE VIEW real_data_warehouse_gold.dim_customers AS
+SELECT    ROW_NUMBER() OVER (ORDER BY Customer_id) AS customer_row_number,derived.*
+FROM (
+SELECT 
+ci.cst_id AS Customer_id,
+ci.cst_key AS Customer_key,
+ci.cst_first_name AS First_name,
+ci.cst_last_name AS Last_name,
+
+-- Use ERP gender when the CRM gender is unknown.
+CASE
+    WHEN ci.cst_gender = 'Unknown'
+         AND ca.gender = 'Unknown'
+    THEN 'Unknown'
+
+    WHEN ci.cst_gender = 'Unknown'
+    THEN ca.gender
+
+    ELSE ci.cst_gender
+END AS Gender,
+
+ci.cst_marital_status AS Marital_status,
+el.country AS Country,
+ca.birth_date AS Birth_date,
+ci.cst_create_date AS Create_date
+FROM real_silver_crm_cust_info ci
+
+-- Add customer demographic information from the ERP system.
+LEFT JOIN real_silver_erp_cust_az12 ca
+ON ci.cst_key = ca.CID
+
+-- Add the customer's country from the ERP location table.
+LEFT JOIN real_silver_erp_loc_a101 el
+ON ci.cst_key = el.CID) AS derived;
+
+
+-- ============================================================
+-- PRODUCT DIMENSION
+-- Combines CRM product data with ERP category information.
+-- ============================================================
+
+CREATE VIEW real_data_warehouse_gold.dim_products AS (
+
+SELECT 
+ROW_NUMBER() OVER(ORDER BY prd_id,prd_start_date) AS Product_identifier,
+pi.prd_id AS Product_id,
+pi.prd_key AS Product_key,
+pi.prd_key_standalone AS Product_key_standalone,
+pi.prd_name AS Product_name,
+pc.maintenance AS Product_maintenance,
+pi.category_id AS Category_id,
+pc.category Product_category,
+pc.sub_category Product_sub_category,
+pi.prd_line AS Product_line,
+pi.prd_cost AS Product_cost,
+pi.prd_start_date AS Product_start_date 
+
+FROM real_silver_crm_prd_info pi
+
+-- Add category, subcategory, and maintenance information from ERP.
+LEFT JOIN real_silver_erp_px_cat_g1v2 pc
+ON pi.category_id = pc.ID);
+
+
+
+
+-- ============================================================
+-- SALES FACT VIEW
+-- Connects each sales transaction to its customer and product
+-- surrogate identifiers.
+-- ============================================================
+
+CREATE VIEW real_data_warehouse_gold.facts_sales AS (
+SELECT 
+gc.Customer_row_number ,
+gp.Product_identifier,
+sd.sls_order_num AS Sales_order_number,
+sd.sls_order_date AS Sales_order_date,
+sd.sls_ship_date AS Sales_ship_date,
+sd.sls_due_date Sales_due_date,
+sd.sls_quantity AS Sales_quantity,
+sd.sls_sales AS Sales,
+sd.sls_price AS Sales_price
+FROM real_silver_crm_sale_details sd
+
+-- Retrieve the customer surrogate identifier.
+LEFT JOIN real_data_warehouse_gold.dim_customers gc
+ON sd.sls_cust_id = gc.Customer_id
+
+-- Retrieve the product surrogate identifier.
+LEFT JOIN real_data_warehouse_gold.dim_products gp
+ON sd.sls_prod_key = gp.Product_key_standalone);
+
