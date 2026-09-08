@@ -1,0 +1,422 @@
+-- Use the bronze database as the data source.
+USE real_data_warehouse_bronze;
+
+
+
+-- Load cleaned and deduplicated CRM customer data.
+INSERT INTO real_data_warehouse_silver.real_silver_crm_cust_info(
+ cst_id ,
+    cst_key ,
+    cst_first_name ,
+    cst_last_name ,
+    cst_marital_status ,
+    cst_gender ,
+    cst_create_date 
+)
+
+-- Rank each customer's records from newest to oldest.
+WITH row_num AS (SELECT  *,
+ROW_NUMBER() OVER(PARTITION BY cst_id ORDER BY cst_create_date DESC) AS row_numbers
+FROM real_crm_cust_info)
+
+SELECT
+cst_id,
+TRIM(cst_key) as cst_key,
+TRIM(cst_first_name) as cst_first_name,
+TRIM(cst_last_name) as cst_last_name,
+
+CASE
+	WHEN cst_marital_status = 'M' THEN 'Married'
+    WHEN cst_marital_status = 'S' THEN 'Single'
+    ELSE 'Unknown'
+END AS cst_marital_status,
+
+CASE
+	WHEN cst_gender = 'M' THEN 'Male'
+    WHEN cst_gender = 'F' THEN 'Female'
+    ELSE 'Unknown'
+END AS cst_gender,
+
+CAST(cst_create_date AS DATE) AS cst_create_date
+FROM row_num
+
+WHERE cst_id > 0
+AND row_numbers = 1
+;
+
+
+SELECT *
+FROM real_data_warehouse_silver.real_silver_crm_cust_info;
+
+
+
+-- Check for product records with invalid date ranges.
+SELECT *
+FROM real_crm_prd_info
+WHERE prd_start_date > prd_end_date;
+
+
+
+-- Load cleaned CRM product data.
+INSERT INTO real_data_warehouse_silver.real_silver_crm_prd_info (
+    prd_id,
+    prd_key,
+    category_id,
+    prd_key_standalone,
+    prd_name,
+    prd_cost,
+    prd_line,
+    prd_start_date,
+    prd_end_date
+);
+
+-- Normalize product text, costs, codes, and raw date values.
+WITH normalized AS (
+    SELECT
+        prd_id,
+        TRIM(prd_key) AS prd_key,
+        TRIM(prd_name) AS prd_name,
+
+        CAST(
+            COALESCE(NULLIF(TRIM(prd_cost), ''), '0')
+            AS DECIMAL(12,2)
+        ) AS prd_cost,
+
+        UPPER(TRIM(prd_line)) AS prd_line,
+
+        TRIM(
+            REPLACE(
+                REPLACE(
+                    REPLACE(prd_start_date, CHAR(13), ''),
+                    CHAR(10), ''
+                ),
+                CHAR(9), ''
+            )
+        ) AS start_date_text,
+
+        TRIM(
+            REPLACE(
+                REPLACE(
+                    REPLACE(prd_end_date, CHAR(13), ''),
+                    CHAR(10), ''
+                ),
+                CHAR(9), ''
+            )
+        ) AS end_date_text
+
+    FROM real_crm_prd_info
+),
+
+-- Validate and convert dates in YYYY-MM-DD format.
+cleaned AS (
+    SELECT
+        prd_id,
+        prd_key,
+        prd_name,
+        prd_cost,
+        prd_line,
+
+        CASE
+            WHEN start_date_text IS NULL
+                 OR start_date_text = ''
+            THEN NULL
+            WHEN start_date_text REGEXP
+                 '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+            THEN STR_TO_DATE(start_date_text, '%Y-%m-%d')
+            ELSE NULL
+        END AS clean_start_date,
+
+        CASE
+            WHEN end_date_text IS NULL
+                 OR end_date_text = ''
+            THEN NULL
+            WHEN end_date_text REGEXP
+                 '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+            THEN STR_TO_DATE(end_date_text, '%Y-%m-%d')
+            ELSE NULL
+        END AS clean_end_date
+
+    FROM normalized
+),
+
+-- Find each product's next start date to help correct invalid end dates.
+sequenced AS (
+    SELECT
+        *,
+        LEAD(clean_start_date) OVER (
+            PARTITION BY SUBSTRING(prd_key, 7)
+            ORDER BY clean_start_date
+        ) AS next_start_date
+    FROM cleaned
+)
+
+SELECT
+    prd_id,
+    prd_key,
+
+    SUBSTRING(prd_key, 1, 5) AS category_id,
+
+    SUBSTRING(prd_key, 7) AS prd_key_standalone,
+    prd_name,
+    prd_cost,
+
+    CASE
+        WHEN prd_line = 'R' THEN 'Road'
+        WHEN prd_line = 'S' THEN 'Other sales'
+        WHEN prd_line = 'M' THEN 'Mountain'
+        WHEN prd_line = 'T' THEN 'Touring'
+        ELSE 'Unknown'
+    END AS prd_line,
+
+    clean_start_date,
+
+    CASE
+        WHEN clean_start_date > clean_end_date
+             AND next_start_date IS NOT NULL
+        THEN DATE_SUB(next_start_date, INTERVAL 1 DAY)
+        ELSE clean_end_date
+    END AS prd_end_date
+
+FROM sequenced;
+
+
+SELECT *
+FROM real_data_warehouse_silver.real_silver_crm_prd_info;
+
+
+
+SELECT *
+FROM real_crm_sale_details;
+
+
+
+ SELECT *
+
+ FROM real_crm_sale_details
+WHERE sls_sales != sls_quantity * ABS(sls_price);
+
+
+
+-- Clean and load CRM sales data using validated dates and safe calculations.
+INSERT INTO real_data_warehouse_silver.real_silver_crm_sale_details (
+    sls_order_num,
+    sls_prod_key,
+    sls_cust_id,
+    sls_order_date,
+    sls_ship_date,
+    sls_due_date,
+    sls_sales,
+    sls_quantity,
+    sls_price
+)
+SELECT
+    TRIM(sls_order_num) AS sls_order_num,
+    TRIM(sls_prod_key) AS sls_prod_key,
+    CAST(TRIM(sls_cust_id) AS SIGNED) AS sls_cust_id,
+
+    CASE
+        WHEN TRIM(sls_order_date) REGEXP '^[0-9]{8}$'
+        THEN STR_TO_DATE(TRIM(sls_order_date), '%Y%m%d')
+        ELSE NULL
+    END AS sls_order_date,
+
+    CASE
+        WHEN TRIM(sls_ship_date) REGEXP '^[0-9]{8}$'
+        THEN STR_TO_DATE(TRIM(sls_ship_date), '%Y%m%d')
+        ELSE NULL
+    END AS sls_ship_date,
+
+    CASE
+        WHEN TRIM(sls_due_date) REGEXP '^[0-9]{8}$'
+        THEN STR_TO_DATE(TRIM(sls_due_date), '%Y%m%d')
+        ELSE NULL
+    END AS sls_due_date,
+
+    CASE
+        WHEN sls_sales IS NULL OR sls_sales <= 0
+        THEN
+            CASE
+                WHEN sls_quantity > 0
+                     AND sls_price IS NOT NULL
+                     AND sls_price != 0
+                THEN sls_quantity * ABS(sls_price)
+                ELSE NULL
+            END
+
+        WHEN sls_price IS NOT NULL
+             AND sls_price != 0
+             AND sls_sales != sls_quantity * ABS(sls_price)
+        THEN sls_quantity * ABS(sls_price)
+
+        ELSE sls_sales
+    END AS sls_sales,
+
+    CAST(TRIM(sls_quantity) AS SIGNED) AS sls_quantity,
+
+    CASE
+        WHEN sls_price IS NULL OR sls_price <= 0
+        THEN
+            CASE
+                WHEN sls_sales > 0 AND sls_quantity > 0
+                THEN sls_sales / sls_quantity
+                ELSE NULL
+            END
+        ELSE sls_price
+    END AS sls_price
+
+FROM real_crm_sale_details;
+
+
+SELECT*
+FROM real_data_warehouse_silver.real_silver_crm_sale_details
+;
+
+
+
+-- Load cleaned ERP customer data.
+INSERT INTO  real_data_warehouse_silver.real_silver_erp_cust_az12 (
+    CID ,
+    birth_date,
+    gender 
+   
+)
+SELECT 
+
+CASE
+	WHEN CID LIKE 'NAS%' THEN SUBSTRING(CID,4,1000)
+    ELSE CID
+END AS CID,
+
+CASE
+	WHEN birth_date > '2022-12-31' OR birth_date < '1900-12-31' THEN NULL
+    ELSE birth_date
+END AS birth_date,
+
+CASE
+    WHEN UPPER(
+        TRIM(
+            REPLACE(
+                REPLACE(gender, CHAR(13), ''),
+                CHAR(10), ''
+            )
+        )
+    ) IN ('F', 'FEMALE')
+    THEN 'Female'
+
+    WHEN UPPER(
+        TRIM(
+            REPLACE(
+                REPLACE(gender, CHAR(13), ''),
+                CHAR(10), ''
+            )
+        )
+    ) IN ('M', 'MALE')
+    THEN 'Male'
+
+    ELSE 'Unknown'
+END AS gender
+FROM real_erp_cust_az12
+
+;
+
+
+
+SELECT REPLACE(CID, '-', '') AS CID, country,
+CASE
+	WHEN TRIM(country) IN ('DE','GERMANY') THEN 'GERMANY'
+    WHEN TRIM(country) IN ('US' , 'United States' , 'USA') THEN 'United States'
+    ELSE country
+END AS new_country
+FROM real_erp_loc_a101;
+
+
+SELECT *
+FROM real_erp_loc_a101;
+
+
+
+-- Load cleaned ERP customer-location data.
+INSERT INTO real_data_warehouse_silver.real_silver_erp_loc_a101 (
+    CID ,
+    country 
+    
+)
+SELECT
+    REPLACE(TRIM(CID), '-', '') AS CID,
+    
+
+    CASE
+        WHEN UPPER(TRIM(REPLACE(country, CHAR(13), '')))
+             IN ('DE', 'GERMANY')
+        THEN 'Germany'
+
+        WHEN UPPER(TRIM(REPLACE(country, CHAR(13), '')))
+             IN ('US', 'USA', 'UNITED STATES')
+        THEN 'United States'
+
+        WHEN TRIM(REPLACE(country, CHAR(13), '')) = ''
+        THEN 'Unknown'
+        
+      
+
+        ELSE TRIM(REPLACE(country, CHAR(13), ''))
+    END AS country
+
+FROM real_erp_loc_a101
+; 
+
+
+
+SELECT *
+FROM real_erp_px_cat_g1v2;
+
+
+SELECT *
+FROM real_crm_prd_info;
+
+
+
+-- Load cleaned ERP product-category data.
+INSERT INTO real_data_warehouse_silver.real_silver_erp_px_cat_g1v2 (
+    ID ,
+    category ,
+    sub_category ,
+    maintenance 
+ 
+)
+
+SELECT REPLACE(ID, '_', '-') AS ID,TRIM(category) AS category, TRIM(sub_category) AS sub_category,TRIM(maintenance) AS maintenance
+FROM real_data_warehouse_bronze.real_erp_px_cat_g1v2;
+
+
+
+-- Review the final ERP silver tables.
+SELECT*
+FROM real_silver_erp_px_cat_g1v2;
+
+SELECT*
+FROM real_silver_erp_loc_a101;
+
+SELECT*
+FROM real_silver_erp_cust_az12;
+
+SELECT
+    prd_key,
+    prd_key_standalone
+FROM real_silver_crm_prd_info
+WHERE prd_key LIKE 'BK-%';
+
+SELECT
+    prd_key,
+    prd_key_standalone
+FROM real_silver_crm_prd_info
+WHERE prd_key LIKE '%BK-%'
+   OR prd_key_standalone LIKE '%BK-%';
+   
+   SELECT DISTINCT
+    sd.sls_prod_key
+FROM real_silver_crm_sale_details AS sd
+LEFT JOIN real_silver_crm_prd_info AS prd
+    ON sd.sls_prod_key = prd.prd_key_standalone
+WHERE prd.prd_key_standalone IS NULL
+ORDER BY sd.sls_prod_key;
