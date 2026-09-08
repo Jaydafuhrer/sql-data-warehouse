@@ -1,0 +1,199 @@
+/*
+============================================================
+GOLD LAYER VALIDATION TESTS
+Run after creating the gold-layer views.
+Error-check queries should return zero rows.
+============================================================
+*/
+
+USE real_data_warehouse_gold;
+
+
+-- ==========================================================
+-- 1. CONFIRM THAT THE GOLD VIEWS EXIST
+-- ==========================================================
+
+SELECT
+    TABLE_NAME,
+    TABLE_TYPE
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = 'real_data_warehouse_gold'
+  AND TABLE_NAME IN ('dim_customers', 'dim_products', 'facts_sales');
+
+
+-- ==========================================================
+-- 2. COMPARE SILVER AND GOLD ROW COUNTS
+-- ==========================================================
+
+SELECT
+    (SELECT COUNT(*)
+     FROM real_data_warehouse_silver.real_silver_crm_cust_info)
+        AS silver_customers,
+
+    (SELECT COUNT(*)
+     FROM real_data_warehouse_gold.dim_customers)
+        AS gold_customers;
+
+
+SELECT
+    (SELECT COUNT(*)
+     FROM real_data_warehouse_silver.real_silver_crm_prd_info)
+        AS silver_products,
+
+    (SELECT COUNT(*)
+     FROM real_data_warehouse_gold.dim_products)
+        AS gold_products;
+
+
+SELECT
+    (SELECT COUNT(*)
+     FROM real_data_warehouse_silver.real_silver_crm_sale_details)
+        AS silver_sales,
+
+    (SELECT COUNT(*)
+     FROM real_data_warehouse_gold.facts_sales)
+        AS gold_sales;
+
+
+-- ==========================================================
+-- 3. CUSTOMER DIMENSION CHECKS
+-- ==========================================================
+
+-- Check for missing customer surrogate keys.
+SELECT *
+FROM dim_customers
+WHERE customer_row_number IS NULL;
+
+-- Check for duplicate customer surrogate keys.
+SELECT
+    customer_row_number,
+    COUNT(*) AS record_count
+FROM dim_customers
+GROUP BY customer_row_number
+HAVING COUNT(*) > 1;
+
+-- Check for duplicate customer IDs.
+SELECT
+    Customer_id,
+    COUNT(*) AS record_count
+FROM dim_customers
+GROUP BY Customer_id
+HAVING COUNT(*) > 1;
+
+-- Review the final gender values.
+SELECT
+    Gender,
+    COUNT(*) AS record_count
+FROM dim_customers
+GROUP BY Gender;
+
+
+-- ==========================================================
+-- 4. PRODUCT DIMENSION CHECKS
+-- ==========================================================
+
+-- Check for missing product surrogate keys.
+SELECT *
+FROM dim_products
+WHERE Product_identifier IS NULL;
+
+-- Check for duplicate product surrogate keys.
+SELECT
+    Product_identifier,
+    COUNT(*) AS record_count
+FROM dim_products
+GROUP BY Product_identifier
+HAVING COUNT(*) > 1;
+
+-- Check for product keys with more than one historical record.
+SELECT
+    Product_key_standalone,
+    COUNT(*) AS record_count
+FROM dim_products
+GROUP BY Product_key_standalone
+HAVING COUNT(*) > 1
+ORDER BY record_count DESC;
+
+-- Find products without matching ERP category information.
+SELECT
+    Product_id,
+    Product_key,
+    Category_id,
+    Product_category,
+    Product_sub_category
+FROM dim_products
+WHERE Product_category IS NULL
+   OR Product_sub_category IS NULL;
+
+
+-- ==========================================================
+-- 5. SALES FACT CHECKS
+-- ==========================================================
+
+-- Check for sales without a customer surrogate key.
+SELECT *
+FROM facts_sales
+WHERE Customer_row_number IS NULL;
+
+-- Check for sales without a product surrogate key.
+SELECT *
+FROM facts_sales
+WHERE Product_identifier IS NULL;
+
+-- Check for invalid quantities or prices.
+SELECT *
+FROM facts_sales
+WHERE Sales_quatity IS NULL OR Sales_quatity <= 0
+   OR Sales_price IS NULL OR Sales_price <= 0;
+
+-- Check the order, shipping, and due-date sequence.
+SELECT *
+FROM facts_sales
+WHERE Sales_order_date > Sales_ship_date
+   OR Sales_ship_date > Sales_due_date;
+
+
+-- ==========================================================
+-- 6. CHECK FOR ROW MULTIPLICATION DURING THE PRODUCT JOIN
+-- ==========================================================
+
+-- A gold sales count greater than the silver sales count suggests that
+-- one sales row matched multiple historical product records.
+SELECT
+    (SELECT COUNT(*)
+     FROM real_data_warehouse_silver.real_silver_crm_sale_details)
+        AS silver_sales_count,
+
+    (SELECT COUNT(*)
+     FROM real_data_warehouse_gold.facts_sales)
+        AS gold_sales_count,
+
+    (SELECT COUNT(*)
+     FROM real_data_warehouse_gold.facts_sales)
+    -
+    (SELECT COUNT(*)
+     FROM real_data_warehouse_silver.real_silver_crm_sale_details)
+        AS additional_rows;
+
+
+-- ==========================================================
+-- 7. VERIFY SILVER KEYS AGAINST THE GOLD DIMENSIONS
+-- ==========================================================
+
+-- Find silver customers missing from the customer dimension.
+SELECT silver_customers.cst_id
+FROM real_data_warehouse_silver.real_silver_crm_cust_info AS silver_customers
+LEFT JOIN dim_customers AS gold_customers
+    ON silver_customers.cst_id = gold_customers.Customer_id
+WHERE gold_customers.Customer_id IS NULL;
+
+-- Find silver products missing from the product dimension.
+SELECT
+    silver_products.prd_id,
+    silver_products.prd_key,
+    silver_products.prd_key_standalone
+FROM real_data_warehouse_silver.real_silver_crm_prd_info AS silver_products
+LEFT JOIN dim_products AS gold_products
+    ON silver_products.prd_id = gold_products.Product_id
+WHERE gold_products.Product_id IS NULL;
+
